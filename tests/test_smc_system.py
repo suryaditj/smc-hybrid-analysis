@@ -48,33 +48,30 @@ class TestSMCHybridScalpingHunter(unittest.TestCase):
         self.assertEqual(cleaned[-1].t, base_t + 44 * 900)
 
     def test_separate_pip_conversion_xau_vs_btc(self):
-        # XAUUSD: $4.50 = 45 pip
         self.assertAlmostEqual(price_to_pips("XAUUSD", 4.50), 45.0, places=2)
-        # BTCUSD: $45.00 = 45 pip
         self.assertAlmostEqual(price_to_pips("BTCUSD", 45.00), 45.0, places=2)
         self.assertNotEqual(PIP_CONFIG["XAUUSD"]["pip_size"], PIP_CONFIG["BTCUSD"]["pip_size"])
 
     def test_bearish_smc_structure_and_report_formatting(self):
         base_t = 1730000000
-        # Susun 20 candle simulasi pergerakan naik lalu CHOCH/BOS bearish + FVG + retest
         ohlc_rows = [
             (3820, 3826, 3819, 3825),
             (3825, 3832, 3824, 3831),
             (3831, 3838, 3830, 3837),
             (3837, 3844, 3836, 3842),
-            (3842, 3846, 3835, 3836),  # swing high 3846
+            (3842, 3846, 3835, 3836),
             (3836, 3839, 3832, 3834),
             (3834, 3841, 3833, 3840),
-            (3840, 3855, 3839, 3853),  # impulse naik
-            (3853, 3862, 3851, 3860),  # swing high 3862
-            (3860, 3861, 3848, 3849),  # pembalikan turun
-            (3849, 3851, 3836, 3837),  # impulse turun -> CHOCH/BOS
-            (3837, 3839, 3822, 3824),  # displacement + bearish FVG
+            (3840, 3855, 3839, 3853),
+            (3853, 3862, 3851, 3860),
+            (3860, 3861, 3848, 3849),
+            (3849, 3851, 3836, 3837),
+            (3837, 3839, 3822, 3824),
             (3824, 3827, 3818, 3820),
             (3820, 3823, 3814, 3816),
-            (3816, 3821, 3815, 3820),  # retracement
-            (3820, 3829, 3819, 3827),  # retest ke zona FVG/OB
-            (3827, 3830, 3821, 3822),  # rejection wick atas
+            (3816, 3821, 3815, 3820),
+            (3820, 3829, 3819, 3827),
+            (3827, 3830, 3821, 3822),
             (3822, 3824, 3817, 3818),
             (3818, 3820, 3813, 3815),
             (3815, 3817, 3811, 3813),
@@ -87,7 +84,11 @@ class TestSMCHybridScalpingHunter(unittest.TestCase):
         snap = run_smc_snapshot(series, live_price=3823.50)
 
         self.assertGreater(len(snap["structure"]["events"]), 0)
-        htf_ctx = {"contexts": [{"tf": "H1", "trend": -1, "summary": "Bearish, BOS bear"}], "overall_trend": -1, "levels": []}
+        htf_ctx = {
+            "contexts": [{"tf": "H1", "trend": -1, "summary": "Bearish, BOS bear"}],
+            "overall_trend": -1,
+            "levels": [],
+        }
 
         sell_entry = detect_scalping_setups("SELL", snap, htf_ctx)
         self.assertTrue(sell_entry["valid"])
@@ -96,6 +97,7 @@ class TestSMCHybridScalpingHunter(unittest.TestCase):
         self.assertIsNone(err)
         self.assertIsNotNone(trade)
         self.assertGreater(trade["sl_safe"], trade["sl_ideal"])
+        self.assertGreaterEqual(trade["rr1"], 1.0)
 
         score1 = compute_deterministic_score("SELL", sell_entry, trade, snap, htf_ctx)
         score2 = compute_deterministic_score("SELL", sell_entry, trade, snap, htf_ctx)
@@ -114,11 +116,54 @@ class TestSMCHybridScalpingHunter(unittest.TestCase):
                 "score": score1,
             }
         )
-        # Pastikan nama penyedia data tidak muncul di laporan
         self.assertNotIn("biquote", report.lower())
         self.assertIn("SMC HYBRID ANALYST", report)
         self.assertIn("SL Ideal", report)
         self.assertIn("SL Aman", report)
+
+    def test_rejects_trade_when_strong_reversal_wall_blocks_1r(self):
+        base_t = 1730000000
+        ohlc_rows = [
+            (95000, 95150, 94950, 95100) for _ in range(20)
+        ]
+        candles = [
+            Candle(base_t + i * 900, o, h, l, c, 100.0)
+            for i, (o, h, l, c) in enumerate(ohlc_rows)
+        ]
+        series = _make_series("BTCUSD", "M15", candles)
+        snap = run_smc_snapshot(series, live_price=95050.0)
+        # Tambahkan dinding Demand kuat tepat di 95020 (< 1R dari entry 95050 dengan SL 95250)
+        snap["snd"].append(
+            {
+                "kind": "demand",
+                "low": 95000.0,
+                "high": 95025.0,
+                "origin": 95000.0,
+                "visits": 0,
+                "status": "fresh",
+                "quality": "Strong Zone",
+                "strength": 0.90,
+                "i": 5,
+            }
+        )
+        fake_entry = {
+            "valid": True,
+            "setups": ["FVG Entry"],
+            "zone": {
+                "low": 95040.0,
+                "high": 95070.0,
+                "origin": 95250.0,
+                "alt_origins": [95250.0],
+                "sources": ["FVG"],
+                "dist": 0.0,
+                "status": "fresh",
+                "strength": 0.8,
+            },
+            "is_countertrend": False,
+        }
+        trade, err = build_trade_plan("BTCUSD", "SELL", fake_entry, snap, {"overall_trend": -1, "levels": []})
+        self.assertIsNone(trade)
+        self.assertIsNotNone(err)
 
 
 if __name__ == "__main__":
