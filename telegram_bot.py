@@ -325,7 +325,7 @@ def create_telegram_app(token: str, state_store: BotStateStore) -> Application:
         chat_id = update.effective_chat.id
         enabled = state_store.toggle_watchlist(chat_id)
         status_txt = (
-            "🔔 <b>Auto-Alert Watchlist AKTIF</b>\nBot akan mengirim sinyal otomatis saat GitHub Actions cron mendeteksi setup kuat (Skor ≥ %d%%)."
+            "🔔 <b>Auto-Alert Watchlist AKTIF</b>\nNotifikasi otomatis aktif. Bot akan mengirim sinyal setiap kali terdeteksi setup potensial (Skor ≥ %d%%)."
             % WATCHLIST_MIN_SCORE
             if enabled
             else "🔕 <b>Auto-Alert Watchlist NONAKTIF</b>\nAnalisis tetap bisa dijalankan kapan saja lewat menu."
