@@ -2,16 +2,15 @@ name: SMC Hybrid Scalping Hunter
 
 on:
   schedule:
-    # Scheduler minimum GitHub Actions: setiap 15 menit (menghindari antrean cron agresif)
-    - cron: "*/15 * * * *"
+    # Mengecek tiap 30 menit; jika sesi 5 jam 40 menit masih jalan, antrean tidak akan menimpa sesi aktif
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       poll_seconds:
-        description: "Durasi window mendengarkan Telegram (detik)"
+        description: "Durasi aktif bot dalam detik (default 20400 = 5 jam 40 menit)"
         required: false
-        default: "210"
+        default: "20400"
 
-# Mencegah workflow saling bertumpuk (overlap)
 concurrency:
   group: smc-hybrid-scalping-runner
   cancel-in-progress: false
@@ -22,7 +21,7 @@ permissions:
 jobs:
   run-smc-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 350
 
     steps:
       - name: Checkout repository
@@ -39,18 +38,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run unit tests (SMC Engine, Risk & Pip Config)
+      - name: Run unit tests
         run: |
           python -m unittest discover -s tests -p "test_*.py" -v
 
-      - name: Execute SMC Telegram Bot Cycle
+      - name: Run SMC Telegram Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          RUNNER_POLL_SECONDS: ${{ github.event.inputs.poll_seconds || '210' }}
+          RUNNER_POLL_SECONDS: ${{ github.event.inputs.poll_seconds || '20400' }}
         run: |
-          python main.py --mode github-actions --poll-seconds "$RUNNER_POLL_SECONDS"
+          python main.py --poll-seconds "$RUNNER_POLL_SECONDS"
 
-      - name: Persist user preferences & update offset
+      - name: Save user preferences
         if: always()
         run: |
           if [ -f data/user_state.json ]; then
