@@ -3,7 +3,7 @@
   "users": {
     "7565078792": {
       "symbol": "XAUUSD",
-      "tf": "M1",
+      "tf": "M15",
       "watchlist": false
     }
   },
