@@ -1,10 +1,10 @@
 {
-  "last_update_id": 96859319,
+  "last_update_id": 96859328,
   "users": {
     "7565078792": {
       "symbol": "XAUUSD",
-      "tf": "H1",
-      "watchlist": true
+      "tf": "M15",
+      "watchlist": false
     }
   },
   "sent_alerts": {}
