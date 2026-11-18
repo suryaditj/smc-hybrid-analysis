@@ -15,7 +15,7 @@ Mengevaluasi 10 pola scalping SMC:
 10. Reversal dari Liquidity
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 def zone_distance_atr(direction: str, zone: Dict[str, Any], price: float, atr: float) -> Optional[float]:
@@ -52,7 +52,6 @@ def detect_scalping_setups(direction: str, snap: Dict[str, Any], htf_ctx: Dict[s
     matched_setups: List[str] = []
     candidate_zones: List[Dict[str, Any]] = []
 
-    # Kumpulkan semua zona SMC searah yang masih aktif dekat harga
     for ob in snap["obs"]:
         if ob["kind"] == want_dir:
             dist = zone_distance_atr(direction, ob, price, atr)
@@ -125,7 +124,6 @@ def detect_scalping_setups(direction: str, snap: Dict[str, Any], htf_ctx: Dict[s
     has_sweep = len(recent_liq) > 0
     has_retest = any(z["dist"] <= 0.35 for z in candidate_zones)
 
-    # Evaluasi 10 pola entry scalping
     if has_bos and (has_retest or len(candidate_zones) > 0):
         matched_setups.append("BOS + Retest")
     if has_choch and (pa["composite"] >= 0.35 or has_retest):
@@ -147,8 +145,6 @@ def detect_scalping_setups(direction: str, snap: Dict[str, Any], htf_ctx: Dict[s
     if has_sweep and has_choch:
         matched_setups.append("Reversal dari Liquidity")
 
-    # Jika belum ada zona struktural tetapi ada momentum breakout / sweep rejection aktual di candle terakhir,
-    # buat zona mikro berbasis candle reaksi/breakout terakhir agar peluang scalping tetap terukur.
     if not candidate_zones and matched_setups:
         c_last = cs[-1]
         c_prev = cs[-2]
@@ -193,16 +189,20 @@ def detect_scalping_setups(direction: str, snap: Dict[str, Any], htf_ctx: Dict[s
             "is_countertrend": False,
         }
 
-    # Urutkan kandidat zona berdasarkan kombinasi kekuatan & kedekatan dengan harga
+    # Prioritaskan zona yang kuat, dekat harga, dan memiliki invalidasi SL yang proporsional
     candidate_zones.sort(
-        key=lambda z: -(z["strength"] * (1.0 - 0.25 * min(z["dist"], 3.0) / 3.0))
+        key=lambda z: -(
+            z["strength"]
+            * (1.0 - 0.25 * min(z["dist"], 3.0) / 3.0)
+            * (1.0 / (1.0 + 0.15 * abs(z["origin"] - price) / atr))
+        )
     )
     primary = candidate_zones[0]
     lo, hi = primary["low"], primary["high"]
     origin = primary["origin"]
+    alt_origins: List[float] = [origin]
     sources = [primary["src"]]
 
-    # Gabungkan zona konfluensi yang saling beririsan
     for other in candidate_zones[1:]:
         if other["low"] <= hi and lo <= other["high"]:
             overlap_lo = max(lo, other["low"])
@@ -211,13 +211,14 @@ def detect_scalping_setups(direction: str, snap: Dict[str, Any], htf_ctx: Dict[s
                 lo, hi = overlap_lo, overlap_hi
             if other["src"] not in sources:
                 sources.append(other["src"])
-            origin = min(origin, other["origin"]) if direction == "BUY" else max(origin, other["origin"])
+            alt_origins.append(other["origin"])
+            # Hanya perlebar origin utama bila selisihnya masih dalam batas scalping (<= 1.0 ATR)
+            if abs(other["origin"] - origin) <= 1.0 * atr:
+                origin = min(origin, other["origin"]) if direction == "BUY" else max(origin, other["origin"])
 
-    # Evaluasi apakah countertrend terhadap HTF
     htf_trend = htf_ctx.get("overall_trend", 0)
     is_countertrend = (htf_trend != 0) and ((htf_trend > 0) != (direction == "BUY"))
 
-    # Countertrend diizinkan bila didukung liquidity sweep + reversal confirmation + momentum
     countertrend_ok = True
     if is_countertrend:
         has_rev_conf = has_sweep or has_choch or pa["rejection"] >= 0.6 or pa["engulfing"] > 0
@@ -228,6 +229,7 @@ def detect_scalping_setups(direction: str, snap: Dict[str, Any], htf_ctx: Dict[s
         "low": lo,
         "high": hi,
         "origin": origin,
+        "alt_origins": alt_origins,
         "sources": sources,
         "dist": primary["dist"],
         "status": primary["status"],
