@@ -27,42 +27,40 @@ def calculate_smart_sl(direction: str, zone: Dict[str, Any], snap: Dict[str, Any
     """
     Hitung Smart Stop Loss berdasarkan invalidasi struktur SMC:
     - SL Ideal: tepat di luar batas struktur/zona invalidasi + buffer volatilitas mikro.
-    - SL Aman: di luar ekstrem sweep likuiditas / swing terluar.
+    - SL Aman: di luar ekstrem sweep likuiditas / swing terluar yang masih proporsional.
     - Range SL: rentang valid antara SL Ideal dan SL Aman bila terdapat 2 level invalidasi valid.
     """
     atr = snap["atr"]
     swings = snap["structure"]["swings"]
     liq_events = snap["structure"]["liq_events"]
     origin = zone["origin"]
+    alt_origins = zone.get("alt_origins", [origin])
 
     if direction == "BUY":
         sl_ideal = origin - 0.20 * atr
-
-        # Cari ekstrem bawah tambahan (sweep low atau swing low terdekat di bawah origin)
-        outer_lows = [origin]
+        outer_lows = [origin] + [o for o in alt_origins if o < origin and (origin - o) <= 1.5 * atr]
         for lq in liq_events:
-            if lq.dirn == "bull" and lq.level <= origin + 0.2 * atr:
+            if lq.dirn == "bull" and lq.level <= origin + 0.2 * atr and (origin - lq.level) <= 1.5 * atr:
                 outer_lows.append(lq.level)
         for sw in swings:
             if sw.kind == "L" and sw.price < origin and (origin - sw.price) <= 1.5 * atr:
                 outer_lows.append(sw.price)
 
         outer_anchor = min(outer_lows)
-        sl_safe = min(sl_ideal - 0.25 * atr, outer_anchor - 0.25 * atr)
+        sl_safe = min(sl_ideal - 0.25 * atr, outer_anchor - 0.20 * atr)
         sl_range = (sl_safe, sl_ideal) if abs(sl_ideal - sl_safe) >= 0.15 * atr else None
     else:
         sl_ideal = origin + 0.20 * atr
-
-        outer_highs = [origin]
+        outer_highs = [origin] + [o for o in alt_origins if o > origin and (o - origin) <= 1.5 * atr]
         for lq in liq_events:
-            if lq.dirn == "bear" and lq.level >= origin - 0.2 * atr:
+            if lq.dirn == "bear" and lq.level >= origin - 0.2 * atr and (lq.level - origin) <= 1.5 * atr:
                 outer_highs.append(lq.level)
         for sw in swings:
             if sw.kind == "H" and sw.price > origin and (sw.price - origin) <= 1.5 * atr:
                 outer_highs.append(sw.price)
 
         outer_anchor = max(outer_highs)
-        sl_safe = max(sl_ideal + 0.25 * atr, outer_anchor + 0.25 * atr)
+        sl_safe = max(sl_ideal + 0.25 * atr, outer_anchor + 0.20 * atr)
         sl_range = (sl_ideal, sl_safe) if abs(sl_safe - sl_ideal) >= 0.15 * atr else None
 
     return {
@@ -74,66 +72,76 @@ def calculate_smart_sl(direction: str, zone: Dict[str, Any], snap: Dict[str, Any
     }
 
 
-def _collect_structural_targets(direction: str, entry_ref: float, snap: Dict[str, Any], htf_ctx: Dict[str, Any]) -> List[Tuple[float, str]]:
-    """Kumpulkan level target struktural (Liquidity, Swing, SND, OB, FVG, SNR, HTF) sebelum area reversal."""
+def _collect_structural_targets(
+    direction: str,
+    entry_ref: float,
+    snap: Dict[str, Any],
+    htf_ctx: Dict[str, Any],
+) -> List[Tuple[float, str, bool]]:
+    """
+    Kumpulkan level target struktural: (harga_target, label, is_reversal_wall).
+    `is_reversal_wall=True` menandakan zona Supply/Demand/OB/SNR kuat yang berpotensi membalikkan harga;
+    `is_reversal_wall=False` menandakan pool likuiditas / swing searah trend yang menjadi target sapuan.
+    """
     atr = snap["atr"]
     buffer = 0.08 * atr
-    raw: List[Tuple[float, str]] = []
+    raw: List[Tuple[float, str, bool]] = []
 
     if direction == "BUY":
         for p in snap["liquidity"]["bsl"]:
             if p > entry_ref:
-                raw.append((p - buffer, "Buy Side Liquidity"))
+                raw.append((p - buffer, "Buy Side Liquidity", False))
         for p in snap["liquidity"]["eqh"]:
             if p > entry_ref:
-                raw.append((p - buffer, "Equal High Liquidity"))
+                raw.append((p - buffer, "Equal High Liquidity", False))
         for sw in snap["structure"]["swings"]:
             if sw.kind == "H" and not sw.broken and sw.price > entry_ref:
-                raw.append((sw.price - buffer, "Swing High"))
+                raw.append((sw.price - buffer, "Swing High", False))
         for z in snap["snd"]:
             if z["kind"] == "supply" and z["low"] > entry_ref:
-                raw.append((z["low"] - buffer, "Supply Zone"))
+                raw.append((z["low"] - buffer, "Supply Zone", True))
         for z in snap["obs"]:
             if z["kind"] == "bear" and z["low"] > entry_ref:
-                raw.append((z["low"] - buffer, "Bearish OB"))
+                raw.append((z["low"] - buffer, "Bearish OB", True))
         for z in snap["snr"]:
             if z["role"] == "resistance" and z["low"] > entry_ref:
-                raw.append((z["low"] - buffer, "Resistance"))
+                raw.append((z["low"] - buffer, "Resistance", z["label"] == "Kuat"))
         for lvl, kind, htf in htf_ctx.get("levels", []):
             if kind == "H" and lvl > entry_ref:
-                raw.append((lvl - buffer, "Swing High %s" % htf))
+                raw.append((lvl - buffer, "Swing High %s" % htf, True))
 
         raw.sort(key=lambda x: x[0])
     else:
         for p in snap["liquidity"]["ssl"]:
             if p < entry_ref:
-                raw.append((p + buffer, "Sell Side Liquidity"))
+                raw.append((p + buffer, "Sell Side Liquidity", False))
         for p in snap["liquidity"]["eql"]:
             if p < entry_ref:
-                raw.append((p + buffer, "Equal Low Liquidity"))
+                raw.append((p + buffer, "Equal Low Liquidity", False))
         for sw in snap["structure"]["swings"]:
             if sw.kind == "L" and not sw.broken and sw.price < entry_ref:
-                raw.append((sw.price + buffer, "Swing Low"))
+                raw.append((sw.price + buffer, "Swing Low", False))
         for z in snap["snd"]:
             if z["kind"] == "demand" and z["high"] < entry_ref:
-                raw.append((z["high"] + buffer, "Demand Zone"))
+                raw.append((z["high"] + buffer, "Demand Zone", True))
         for z in snap["obs"]:
             if z["kind"] == "bull" and z["high"] < entry_ref:
-                raw.append((z["high"] + buffer, "Bullish OB"))
+                raw.append((z["high"] + buffer, "Bullish OB", True))
         for z in snap["snr"]:
             if z["role"] == "support" and z["high"] < entry_ref:
-                raw.append((z["high"] + buffer, "Support"))
+                raw.append((z["high"] + buffer, "Support", z["label"] == "Kuat"))
         for lvl, kind, htf in htf_ctx.get("levels", []):
             if kind == "L" and lvl < entry_ref:
-                raw.append((lvl + buffer, "Swing Low %s" % htf))
+                raw.append((lvl + buffer, "Swing Low %s" % htf, True))
 
         raw.sort(key=lambda x: -x[0])
 
-    # Gabungkan level target yang terlalu berdekatan (< 0.25 ATR)
-    filtered: List[Tuple[float, str]] = []
-    for price_lvl, label in raw:
+    filtered: List[Tuple[float, str, bool]] = []
+    for price_lvl, label, is_wall in raw:
         if not filtered or abs(price_lvl - filtered[-1][0]) >= 0.25 * atr:
-            filtered.append((price_lvl, label))
+            filtered.append((price_lvl, label, is_wall))
+        elif is_wall and not filtered[-1][2]:
+            filtered[-1] = (price_lvl, label, True)
     return filtered
 
 
@@ -156,18 +164,13 @@ def build_trade_plan(
     atr = snap["atr"]
     pip_cfg = PIP_CONFIG[symbol]
 
-    if direction == "BUY":
-        entry_ref = price if zone["low"] <= price <= zone["high"] else (zone["low"] + zone["high"]) / 2.0
-        sign = 1.0
-    else:
-        entry_ref = price if zone["low"] <= price <= zone["high"] else (zone["low"] + zone["high"]) / 2.0
-        sign = -1.0
+    entry_ref = price if zone["low"] <= price <= zone["high"] else (zone["low"] + zone["high"]) / 2.0
+    sign = 1.0 if direction == "BUY" else -1.0
 
     sl_data = calculate_smart_sl(direction, zone, snap)
     sl_primary = sl_data["sl_primary"]
     risk = abs(entry_ref - sl_primary)
 
-    # Pastikan SL minimal 0.45 ATR agar tidak tersapu noise mikro
     if risk < 0.45 * atr:
         sl_primary = entry_ref - sign * 0.45 * atr
         sl_data["sl_ideal"] = sl_primary
@@ -185,37 +188,40 @@ def build_trade_plan(
 
     targets = _collect_structural_targets(direction, entry_ref, snap, htf_ctx)
 
-    # Referensi jarak pip TP1 (30-50), TP2 (50-100), TP3 (100-120)
+    # Cek apakah ada dinding pembalikan kuat yang menghalangi kurang dari 1R
+    blocking_walls = [t for t in targets if t[2] and abs(t[0] - entry_ref) < 1.0 * risk]
+    if blocking_walls:
+        return None, "Ruang profit menuju area pembalikan terdekat (%s) kurang dari 1R." % blocking_walls[0][1]
+
     tp1_ref_mid = pips_to_price(symbol, sum(pip_cfg["tp1_pips"]) / 2.0)
     tp2_ref_mid = pips_to_price(symbol, sum(pip_cfg["tp2_pips"]) / 2.0)
     tp3_ref_mid = pips_to_price(symbol, sum(pip_cfg["tp3_pips"]) / 2.0)
 
-    # Pilih TP1: prioritaskan level struktural dengan RR >= 1.0
     valid_tp1 = [t for t in targets if abs(t[0] - entry_ref) >= 1.0 * risk]
     if valid_tp1:
-        # Pilih target struktural yang paling dekat dengan area profit ideal (sekitar 1.2R - 2.0R atau referensi TP1)
         valid_tp1.sort(key=lambda t: abs(abs(t[0] - entry_ref) - max(1.3 * risk, tp1_ref_mid)))
-        tp1, tp1_note = valid_tp1[0]
-    elif not targets:
-        # Tidak ada hambatan struktural di depan -> pakai proyeksi RR 1:1.5
+        tp1, tp1_note, _ = valid_tp1[0]
+    elif targets:
+        # Hanya ada minor liquidity/swing low di tepi 20 candle -> targetkan ekstensi sweep likuiditas
+        nearest_liq = targets[-1]
+        ext_dist = max(1.35 * risk, abs(nearest_liq[0] - entry_ref) + 0.5 * atr)
+        tp1 = entry_ref + sign * ext_dist
+        tp1_note = "Ekstensi sweep %s (RR 1:1.35)" % nearest_liq[1]
+    else:
         tp1 = entry_ref + sign * max(1.5 * risk, min(tp1_ref_mid, 2.2 * atr))
         tp1_note = "Proyeksi RR 1:1.5 (ruang terbuka)"
-    else:
-        return None, "Ruang profit menuju area pembalikan terdekat kurang dari 1R."
 
-    # Pilih TP2: level struktural lebih jauh dengan RR >= 1.8
     valid_tp2 = [
         t for t in targets
         if sign * (t[0] - tp1) >= 0.4 * atr and abs(t[0] - entry_ref) >= 1.8 * risk
     ]
     if valid_tp2:
         valid_tp2.sort(key=lambda t: abs(abs(t[0] - entry_ref) - max(2.2 * risk, tp2_ref_mid)))
-        tp2, tp2_note = valid_tp2[0]
+        tp2, tp2_note, _ = valid_tp2[0]
     else:
         tp2 = entry_ref + sign * max(2.5 * risk, abs(tp1 - entry_ref) + 1.0 * risk, min(tp2_ref_mid, 3.8 * atr))
         tp2_note = "Proyeksi ekstensi momentum"
 
-    # Pilih TP3: HANYA jika tersedia level struktural lanjutan setelah TP2 (jangan mengarang)
     tp3: Optional[float] = None
     tp3_note: Optional[str] = None
     valid_tp3 = [
@@ -224,7 +230,7 @@ def build_trade_plan(
     ]
     if valid_tp3:
         valid_tp3.sort(key=lambda t: abs(abs(t[0] - entry_ref) - max(3.0 * risk, tp3_ref_mid)))
-        tp3, tp3_note = valid_tp3[0]
+        tp3, tp3_note, _ = valid_tp3[0]
 
     rr1 = abs(tp1 - entry_ref) / risk
     rr2 = abs(tp2 - entry_ref) / risk
@@ -283,7 +289,6 @@ def compute_deterministic_score(
     price = snap["price"]
     atr = snap["atr"]
 
-    # 1. Market Structure (max 18)
     events = snap["structure"]["events"]
     last_ev = events[-1] if events else None
     if last_ev is not None and last_ev.dirn == want_dir:
@@ -296,7 +301,6 @@ def compute_deterministic_score(
     else:
         struct_pts = 2.5
 
-    # 2. Liquidity (max 14)
     liq_events = snap["structure"]["liq_events"]
     has_sweep = any(lq.dirn == want_dir and (n - 1 - lq.i) <= 6 for lq in liq_events)
     has_grab = any(lq.kind == "Liquidity Grab" and lq.dirn == want_dir and (n - 1 - lq.i) <= 6 for lq in liq_events)
@@ -306,7 +310,6 @@ def compute_deterministic_score(
     liq_pts = (14.0 if has_grab else (11.5 if has_sweep else 0.0)) + (2.5 if (has_pool and not has_grab) else 0.0)
     liq_pts = min(14.0, liq_pts)
 
-    # 3. FVG (max 12)
     rel_fvgs = [f for f in snap["fvg"] if f["kind"] == want_dir]
     if rel_fvgs:
         best_fvg = max(rel_fvgs, key=lambda f: f["strength"])
@@ -318,7 +321,6 @@ def compute_deterministic_score(
     else:
         fvg_pts = 0.0
 
-    # 4. Order Block (max 12)
     rel_obs = [o for o in snap["obs"] if o["kind"] == want_dir]
     if rel_obs:
         best_ob = max(rel_obs, key=lambda o: o["strength"])
@@ -330,24 +332,18 @@ def compute_deterministic_score(
     else:
         ob_pts = 0.0
 
-    # 5. Price Action (max 12)
     pa = snap["pa"][direction]
     pa_pts = 12.0 * pa["composite"]
-
-    # 6. Momentum (max 10)
     mom_pts = 10.0 * max(pa["momentum"], 0.65 * pa["impulsive"])
 
-    # 7. HTF Context (max 10)
     htf_trend = htf_ctx.get("overall_trend", 0)
     if htf_trend == 0:
         htf_pts = 6.0
     elif (htf_trend > 0) == (direction == "BUY"):
         htf_pts = 10.0
     else:
-        # Countertrend tetap mendapat poin bila memiliki konfirmasi sweep/reversal
         htf_pts = 4.5 if entry_info.get("valid") else 1.5
 
-    # 8. Risk Reward (max 6) & 9. Ruang menuju target (max 6)
     if trade is not None:
         rr_pts = 6.0 * clip((trade["rr1"] - 0.8) / 1.2)
         room_pts = 6.0 if trade["room_targets_count"] >= 2 else (4.5 if trade["room_targets_count"] == 1 else 3.0)
