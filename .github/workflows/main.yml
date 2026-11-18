@@ -2,7 +2,7 @@ name: SMC Hybrid Scalping Hunter
 
 on:
   schedule:
-    # Mengecek tiap 30 menit; jika sesi 5 jam 40 menit masih jalan, antrean tidak akan menimpa sesi aktif
+    # Mengecek setiap 30 menit; jika sesi 5 jam 40 menit masih jalan, antrean tidak akan menimpa sesi aktif
     - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
